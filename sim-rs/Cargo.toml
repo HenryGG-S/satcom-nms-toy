@@ -1,0 +1,9 @@
+[package]
+name = "sim-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+crc32fast = "1"
+rand = "0.8"
