@@ -1,0 +1,98 @@
+@startuml
+skinparam componentStyle rectangle
+title SatCom NMS Mini-Stack — Architecture (MVP)
+
+package "Simulator (sim-rs)" {
+  [Telemetry Generator] as TG
+  [Fault Injector] as FI
+  [Command Handler] as CH
+  [UDP Transport] as S_UDP
+  TG --> S_UDP
+  FI --> TG
+  S_UDP --> CH : command frames
+}
+
+package "Ingest Service (ingest-java)" {
+  [UDP Receiver] as I_UDP
+  [Frame Parser + CRC] as PARSE
+  [Telemetry Decoder] as DECODE
+  [Node State Store] as STORE
+  [Alarm Engine] as ALARM
+  [Correlation Engine] as CORR
+  [Event Log] as ELOG
+  [Command Scheduler] as CS
+  [Command Tx] as CTX
+  [API (CLI/HTTP)] as API
+
+  I_UDP --> PARSE
+  PARSE --> DECODE : telemetry payload
+  DECODE --> STORE : update latest state
+  STORE --> ALARM
+  ALARM --> CORR
+  PARSE --> ELOG : accepted/rejected events
+  ALARM --> ELOG : alarm lifecycle events
+  CORR --> ELOG : correlation events
+
+  API --> CS
+  CS --> ELOG : command created
+  CS --> CTX : send command frame
+}
+
+S_UDP --> I_UDP : telemetry frames
+CTX --> S_UDP : command frames
+CH --> S_UDP : command ack frames (future/MVP if time)
+
+note right of PARSE
+All datagrams are untrusted input.
+Parser must validate:
+- magic
+- length fields
+- CRC32
+end note
+
+@enduml
+
+@startuml
+title Sequence — Fault injection to alarm and recovery
+
+actor Operator as OP
+participant "Simulator" as SIM
+participant "Ingest UDP Receiver" as UDP
+participant "Parser/CRC" as PARSE
+participant "State Store" as STORE
+participant "Alarm Engine" as ALARM
+participant "Command Scheduler" as CS
+participant "Event Log" as ELOG
+
+== Nominal ==
+SIM -> UDP : Telemetry frame (lock=1, ber low)
+UDP -> PARSE : bytes
+PARSE -> STORE : update(node_id, metrics)
+STORE -> ALARM : evaluate(node_id)
+ALARM -> ELOG : (optional) no alarm
+
+== Fault injection ==
+OP -> SIM : enable fault "lock=0" for node 3
+SIM -> UDP : Telemetry frame (node 3 lock=0)
+UDP -> PARSE : bytes
+PARSE -> STORE : update(node 3)
+STORE -> ALARM : evaluate(node 3)
+ALARM -> ALARM : persistence timer accumulates
+
+... after T_lock_lost ...
+ALARM -> ELOG : AlarmRaised(LOCK_LOST,node 3)
+
+== Mitigation ==
+OP -> CS : issue command RESET_MODEM(node 3)
+CS -> ELOG : CommandCreated(command_id)
+CS -> SIM : Command frame RESET_MODEM(node 3)
+
+== Recovery ==
+SIM -> UDP : Telemetry (node 3 lock=1)
+UDP -> PARSE : bytes
+PARSE -> STORE : update(node 3)
+STORE -> ALARM : evaluate(node 3)
+... after T_clear ...
+ALARM -> ELOG : AlarmCleared(LOCK_LOST,node 3)
+
+@enduml
